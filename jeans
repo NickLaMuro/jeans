@@ -1,0 +1,272 @@
+#!/usr/bin/ruby --disable-gems
+
+class Jeans
+  VERSION = "0.1.0"
+
+  def self.version
+    puts VERSION
+  end
+
+  def self.run argv
+    new(argv).run
+  end
+
+  def self.help
+    puts <<-HELP.gsub(/^ {6}/, '')
+      usage:  jeans [ACTION] [ARG]...
+
+      Subcommands:
+
+          id          Retrieve the id for a given number
+          url         Retrieve the url for a given number
+          add         Add a new number (example: `jeans 111 alias1 alias2`)
+          list        List all numbers
+          init        Init an address book
+          contrib     Info about where to find completion and other info
+          complete    Auto complete based on current arg
+          version     Prints the version number
+          help        This help
+
+    HELP
+  end
+
+  class NoResultsFoundError < ArgumentError
+    def initialize search_phrase = ""
+      super "no results found for '#{search_phrase}'"
+    end
+  end
+
+  class TooManyResultsError < ArgumentError
+    def initialize results, search_phrase = ""
+      super "too many results (#{results.join(', ')}) for '#{search_phrase}'"
+    end
+  end
+
+  class Number
+    attr_accessor :num, :aliases
+
+    def initialize num, *aliases
+      @num     = num
+      @aliases = aliases
+    end
+
+    def name
+      aliases.first
+    end
+
+    def matching_phrase phrase
+      phrase = /^#{phrase}/ if phrase.kind_of?(String)
+      if @num =~ phrase
+        @num
+      else
+        @aliases.detect { |a| a =~ phrase }
+      end
+    end
+    alias =~ matching_phrase
+
+    def url
+      @url ||= "bjnb://meet/id/#{num}"
+    end
+
+    def inspect
+      ([num] + aliases).join(",").inspect
+    end
+
+    def to_csv
+      ([num] + aliases).join(",")
+    end
+  end
+
+  attr_accessor :argv, :action, :mode
+
+  def initialize argv = []
+    @argv = argv
+    parse_args argv
+  end
+
+  def run
+    send action
+  rescue NoResultsFoundError, TooManyResultsError => e
+    warn "#{e.class.to_s.split("::").last}:  #{e.message}"
+    exit 1
+  end
+
+  def help;    self.class.help;    end
+  def version; self.class.version; end
+
+  # Generate an "address book" for bluejeans numbers
+  def init
+    require 'fileutils'
+
+    FileUtils.touch db_file_name
+  end
+
+  # Print the address book in a tablular format
+  def list
+    data =  []
+    data << ["    number  ", "aliases"]
+
+    load_db_data.each do |contact|
+      number     = contact.num.rjust(12)
+      aliases    = contact.name.ljust(15)
+      alternates = contact.aliases[1..-1]
+      aliases   << " (#{alternates.join(', ')})" unless alternates.count.zero?
+
+      data << [number, aliases]
+    end
+
+    max_alias = [ 15, data.map {|row| row.last.length}.max ].max
+
+    puts "#{data[0][0]}  |  #{data[0][1]}"  #     number    |   aliases
+    puts "-" * (12 + 5 + max_alias + 2)     # --------------------------------
+    data[1..-1].each do |row|               #          111  |  name  (alias)
+      puts   "#{row[0]}  |  #{row[1]}"      #   xxxxxxxxxx  |  name2
+    end
+  end
+
+  def add
+    number = add_number(*self.argv)
+    puts "#{number.num}: #{number.aliases.join(", ")}"
+  end
+
+  def retrieve
+    send mode
+  end
+
+  def search_phrase
+    self.argv[0]
+  end
+
+  def search_regex
+    @search_regexp = /^#{search_phrase}/
+  end
+
+  def search
+    return @search if defined? @search
+
+    db    = load_db_data
+    @search = db.select { |number| number =~ search_regex }
+    if mode != :complete && @search.empty? # allow a person to dial the number as is
+      num_phrase = search_phrase.gsub(/[^0-9]/,'')
+      @search    = [ Number.new(num_phrase, "unknown") ] unless num_phrase == ''
+    end
+
+    @search
+  end
+
+  def contrib
+    pwd           = File.dirname File.realpath(__FILE__)
+    contrib_dir   = File.expand_path "contrib", pwd
+
+    bash_complete = File.join contrib_dir, "completion", "jeans.bash"
+
+    puts <<-CONTRIB_INFO.gsub(/^ {6}/, '')
+      # A Bash completion script can be found and loaded by adding the
+      # following to your .bashrc:
+
+      source #{bash_complete}
+    CONTRIB_INFO
+  end
+
+  private
+
+  def parse_args argv
+    self.action = :retrieve
+
+    case argv[0]
+    when "id", "url", "complete"
+      self.mode = argv[0].to_sym
+      argv.shift
+      argv[0] ||= "" if self.mode == :complete
+    when "add", "contrib", "list", "init", "version"
+      self.action = argv[0].to_sym
+      argv.shift
+    when "help", "", nil
+      self.action = :help
+    else
+      self.mode = :open
+    end
+  end
+
+  # TODO: handle duplicate aliases
+  def add_number num, *aliases
+    num, *aliases = num.split if aliases.empty?
+
+    data = load_db_data
+
+    # if the number already exists, we will add this alias to that entry
+    old_data = data.detect { |n| n.num == num }
+    data.reject! { |n| n.num == num }
+
+    # merge old data and new data
+    aliases = (old_data.aliases + aliases).uniq if old_data && !old_data.aliases.empty?
+
+    new_num = Number.new(num, *aliases)
+    data.push(new_num)
+
+    db_to_file(data)
+    new_num
+  end
+
+  def id
+    puts search.map { |item| item.num }
+  end
+
+  def url
+    puts search.map { |item| item.url }
+  end
+
+  def complete
+    puts results.join(' ')
+  end
+
+  def results
+    search.map! { |item| item.aliases.select {|a| a =~ search_regex } }
+          .flatten
+          .sort!
+  end
+
+  def open
+    raise NoResultsFoundError.new(search_phrase)          if search.count < 1
+    raise TooManyResultsError.new(results, search_phrase) if search.count > 1
+
+    require 'rbconfig'
+
+    url   = search.first.url
+    case RbConfig::CONFIG['host_os']
+    when /darwin|mac os/                            # OSX
+      exec %Q(open "#{url}")
+    when /linux|solaris|bsd/                        # Linux
+      puts url
+    when /mswin|msys|mingw|cygwin|bccwin|wince|emc/ # Windows
+      exec %Q(start "" "#{url}")
+    else
+      puts url
+    end
+  end
+
+  def load_db_data
+    @db_data ||= data_from_file.map { |line| Number.new(*line.split(",")) }
+  end
+
+  def db_to_file db
+    self.db_data = db.map(&:to_csv).join("\n") + "\n"
+  end
+
+  def data_from_file
+    File.read(db_file_name).split(/\n/).map(&:chomp)
+  end
+
+  def db_data= data
+    @db_data = data
+    File.write db_file_name, @db_data
+  end
+
+  def db_file_name
+    @db_file_name ||= File.join Dir.home, ".jeans.numbers"
+  end
+end
+
+if File.basename($PROGRAM_NAME) == File.basename(__FILE__)
+  Jeans.run ARGV
+end
