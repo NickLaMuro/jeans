@@ -12,7 +12,7 @@ _jeans() {
   COMPREPLY=()
   cur=${COMP_WORDS[COMP_CWORD]}
 
-  generated_matches=$(./jeans complete $cur)
+  generated_matches=$(jeans complete $cur)
   COMPREPLY=( $( compgen -W "$generated_matches" -- $cur ) )
 
   return 0
