@@ -1,6 +1,5 @@
 require "rubygems/package_task"
-
-JEANS_GEMSPEC = eval File.read("jeans.gemspec")
+require File.expand_path "constants", File.dirname(__FILE__)
 
 namespace :rubygems do
   Gem::PackageTask.new(JEANS_GEMSPEC).define
