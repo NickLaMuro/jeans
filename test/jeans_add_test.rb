@@ -2,7 +2,7 @@ require "test_helper"
 require "tempfile"
 require "fileutils"
 
-class JeansOpenTest < Minitest::Test
+class JeansAddTest < Minitest::Test
   def setup
     @test_contacts_file = Tempfile.open
   end
